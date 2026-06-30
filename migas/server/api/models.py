@@ -1,6 +1,7 @@
 """Pydantic request/response models for REST API endpoints."""
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 from ..types import Status, User, Container
@@ -29,6 +30,7 @@ class BreadcrumbRequest(BaseModel):
     language_version: str = '0.0.0'
     ctx: ContextPayload = ContextPayload()
     proc: ProcessPayload = ProcessPayload()
+    meta: dict[str, Any] | None = None
 
 
 class BreadcrumbResponse(BaseModel):
