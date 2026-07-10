@@ -1,5 +1,7 @@
+import csv
 import json
 import logging
+from io import StringIO
 from datetime import date, datetime, timezone, timedelta
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
@@ -13,6 +15,7 @@ from ..database import (
     get_viz_data,
     ingest_project,
     project_exists,
+    query_crumb_export,
     query_projects,
     revoke_token,
 )
@@ -35,6 +38,23 @@ from .models import (
 
 router = APIRouter(prefix='/api', tags=['api'])
 logger = logging.getLogger('migas')
+
+CRUMB_EXPORT_COLUMNS = [
+    'idx',
+    'project',
+    'version',
+    'language',
+    'language_version',
+    'timestamp',
+    'session_id',
+    'user_id',
+    'status',
+    'status_desc',
+    'error_type',
+    'error_desc',
+    'is_ci',
+    'params',
+]
 
 
 @router.get('/auth/projects', response_model=AuthProjectsResponse)
@@ -142,6 +162,54 @@ async def _extend_historical(
         dirty = True
 
     return data, oldest_date, last_date, dirty
+
+
+def _csv_value(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True)
+    if value is None:
+        return ''
+    return value
+
+
+def _safe_export_filename(project: str, start: datetime, end: datetime) -> str:
+    safe_project = ''.join(c if c.isalnum() or c in ('-', '_', '.') else '-' for c in project)
+    return f'migas-{safe_project}-{start.date()}-{end.date()}.csv'
+
+
+@router.get('/usage-export/{project:path}')
+async def export_usage_csv(
+    project: str,
+    start: datetime,
+    end: datetime,
+    version: str | None = None,
+    _auth=Depends(require_access()),
+):
+    """Export raw crumb rows for the selected dashboard range as CSV."""
+    start = _utc(start)
+    end = _utc(end)
+    if start > end:
+        raise HTTPException(status_code=400, detail='start must be before end.')
+
+    if not await project_exists(project):
+        raise HTTPException(status_code=404, detail=f'Project {project} not found.')
+
+    rows = await query_crumb_export(project, start, end, version=version)
+
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=CRUMB_EXPORT_COLUMNS, lineterminator='\n')
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({column: _csv_value(row.get(column)) for column in CRUMB_EXPORT_COLUMNS})
+
+    filename = _safe_export_filename(project, start, end)
+    return Response(
+        output.getvalue(),
+        media_type='text/csv; charset=utf-8',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get('/usage/{project:path}', response_model=list[UsageData])

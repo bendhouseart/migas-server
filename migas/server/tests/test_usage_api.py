@@ -1,5 +1,8 @@
 """Tests for GET /api/usage/{project} — weeks param and backward cache extension."""
 
+import csv
+import io
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -216,6 +219,93 @@ async def test_usage_api_response_cache(client: TestClient, db, monkeypatch):
     res3 = client.get(f'/api/usage/{project}?weeks=2', headers=auth)
     assert res3.status_code == 200
     assert len(calls) > first_call_count, 'distinct (weeks) cache key should miss and query'
+
+
+@pytest.mark.anyio
+async def test_usage_export_csv_returns_raw_crumbs_for_range(client: TestClient, db):
+    """CSV export returns raw DB rows, filtered by timestamp range and active version."""
+    from datetime import datetime, timezone, timedelta
+    from migas.server.tests.conftest import USER_A, USER_B, SESSION_1, SESSION_2, SESSION_3
+
+    project = 'test/api-export'
+    await db.register(project)
+    auth = await db.token(project)
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    await db.crumb(
+        project,
+        status='C',
+        status_desc='done',
+        session_id=SESSION_1,
+        user_id=USER_A,
+        timestamp=now - timedelta(days=1),
+        version='1.0.0',
+    )
+    await db.crumb(
+        project,
+        status='F',
+        session_id=SESSION_2,
+        user_id=USER_B,
+        timestamp=now - timedelta(days=1),
+        version='2.0.0',
+    )
+    await db.crumb(
+        project,
+        status='C',
+        session_id=SESSION_3,
+        user_id=USER_A,
+        timestamp=now - timedelta(days=10),
+        version='1.0.0',
+        ensure_user=False,
+    )
+
+    res = client.get(
+        f'/api/usage-export/{project}',
+        params={
+            'start': (now - timedelta(days=2)).isoformat(),
+            'end': (now + timedelta(hours=1)).isoformat(),
+            'version': '1.0.0',
+        },
+        headers=auth,
+    )
+
+    assert res.status_code == 200
+    assert res.headers['content-type'].startswith('text/csv')
+    assert 'attachment; filename="migas-test-api-export-' in res.headers['content-disposition']
+
+    rows = list(csv.DictReader(io.StringIO(res.text)))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row['project'] == project
+    assert row['version'] == '1.0.0'
+    assert row['status'] == 'C'
+    assert row['status_desc'] == 'done'
+    assert row['session_id'] == SESSION_1
+    assert row['params'] == ''
+
+
+@pytest.mark.anyio
+async def test_usage_export_csv_respects_project_access(client: TestClient, db):
+    """Scoped tokens cannot export another project's raw crumbs."""
+    from datetime import datetime, timezone, timedelta
+
+    allowed_project = 'test/api-export-auth-allowed'
+    blocked_project = 'test/api-export-auth-blocked'
+    await db.register(allowed_project)
+    await db.register(blocked_project)
+    auth = await db.token(allowed_project)
+
+    now = datetime.now(timezone.utc)
+    res = client.get(
+        f'/api/usage-export/{blocked_project}',
+        params={
+            'start': (now - timedelta(days=1)).isoformat(),
+            'end': now.isoformat(),
+        },
+        headers=auth,
+    )
+
+    assert res.status_code == 403
 
 
 @pytest.mark.anyio

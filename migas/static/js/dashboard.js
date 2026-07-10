@@ -130,6 +130,88 @@ async function fetchUsageData(project, weeks = 1, since = null) {
 	return await res.json();
 }
 
+function _encodeProjectPath(project) {
+	return project.split("/").map(encodeURIComponent).join("/");
+}
+
+function _getVisibleExportBounds() {
+	const project = projectSelect.value;
+	const rows = dataCache[project]?.day || [];
+	if (!rows.length) return null;
+
+	let earliestMs = Infinity;
+	let latestMs = 0;
+	for (const r of rows) {
+		const t = new Date(`${r.date}T00:00:00Z`).getTime();
+		if (t < earliestMs) earliestMs = t;
+		if (t > latestMs) latestMs = t;
+	}
+
+	const start = new Date(currentXMin ?? earliestMs);
+	start.setUTCHours(0, 0, 0, 0);
+	const end = new Date(currentXMax ?? latestMs);
+	end.setUTCHours(23, 59, 59, 999);
+	return { start, end };
+}
+
+function _filenameFromResponse(response, fallback) {
+	const header = response.headers.get("Content-Disposition") || "";
+	const match = header.match(/filename="?(?<filename>[^";]+)"?/);
+	return match?.groups?.filename || fallback;
+}
+
+async function _exportVisibleRangeCsv() {
+	const bounds = _getVisibleExportBounds();
+	if (!bounds) return;
+
+	const button = document.getElementById("export-csv-btn");
+	button.disabled = true;
+
+	try {
+		const project = projectSelect.value;
+		const qs = new URLSearchParams({
+			start: bounds.start.toISOString(),
+			end: bounds.end.toISOString(),
+		});
+		if (selectedVersion) qs.set("version", selectedVersion);
+
+		const res = await fetch(
+			`/api/usage-export/${_encodeProjectPath(project)}?${qs.toString()}`,
+			{
+				headers: {
+					Authorization: `Bearer ${token}`,
+				},
+			},
+		);
+
+		if (!res.ok) {
+			let detail = "Failed to export usage data";
+			try {
+				const error = await res.json();
+				detail = error.detail || detail;
+			} catch (_err) {
+				detail = await res.text();
+			}
+			throw new Error(detail);
+		}
+
+		const blob = await res.blob();
+		const url = URL.createObjectURL(blob);
+		const link = document.createElement("a");
+		link.href = url;
+		link.download = _filenameFromResponse(res, "migas-usage-export.csv");
+		document.body.append(link);
+		link.click();
+		link.remove();
+		URL.revokeObjectURL(url);
+	} catch (err) {
+		console.error("Usage export failed:", err);
+		alert(err.message || "Failed to export usage data");
+	} finally {
+		button.disabled = false;
+	}
+}
+
 // ── Reshaping ──────────────────────────────────────────────────────────────
 
 function getMonday(d) {

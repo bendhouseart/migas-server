@@ -226,6 +226,45 @@ async def project_exists(project: str, session: AsyncSession | None = None) -> b
         return bool(res.one_or_none())
 
 
+async def query_crumb_export(
+    project_name: str,
+    start_ts: datetime,
+    end_ts: datetime,
+    version: str | None = None,
+    session: AsyncSession | None = None,
+) -> list[dict[str, object]]:
+    """Return raw crumb rows for an explicit export window."""
+    query = (
+        select(
+            Crumb.idx.label('idx'),
+            Crumb.project.label('project'),
+            Crumb.version.label('version'),
+            Crumb.language.label('language'),
+            Crumb.language_version.label('language_version'),
+            Crumb.timestamp.label('timestamp'),
+            Crumb.session_id.label('session_id'),
+            Crumb.user_id.label('user_id'),
+            Crumb.status.label('status'),
+            Crumb.status_desc.label('status_desc'),
+            Crumb.error_type.label('error_type'),
+            Crumb.error_desc.label('error_desc'),
+            Crumb.is_ci.label('is_ci'),
+            Crumb.params.label('params'),
+        )
+        .where(Crumb.project == project_name)
+        .where(Crumb.timestamp >= start_ts)
+        .where(Crumb.timestamp <= end_ts)
+        .order_by(Crumb.timestamp.asc(), Crumb.idx.asc())
+    )
+
+    if version:
+        query = query.where(Crumb.version == version)
+
+    async with gen_session(session) as session:
+        res = await session.execute(query)
+        return [dict(row._mapping) for row in res.all()]
+
+
 async def get_viz_data(
     project_name: str,
     start_ts: datetime | None = None,
