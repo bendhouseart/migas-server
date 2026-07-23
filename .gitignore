@@ -15,6 +15,7 @@ mounts/
 protob/
 database/
 sandbox/
+.DS_Store
 
 # Ignore generated credentials from google-github-actions/auth
 gha-creds-*.json
