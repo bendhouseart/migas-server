@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import distinct, func, select, true
 from sqlalchemy.dialects.postgresql import insert
+from pydantic import JsonValue
 
 from .connections import gen_session, AsyncSession
 from .models import User, Crumb, projects, GeoLoc, Authentication
@@ -45,7 +46,7 @@ async def insert_crumb(
     error_desc: str | None,
     is_ci: bool,
     session: AsyncSession | None = None,
-    params: dict | None = None
+    params: dict[str, JsonValue] | None = None
 ) -> None:
     """Add to crumbs table"""
     async with gen_session(session) as session:
@@ -133,7 +134,11 @@ async def insert_query_geoloc(ip: str, session: AsyncSession | None = None) -> i
         return res.scalar_one_or_none()
 
 
-async def ingest_project(project: Project, ip: str | None = None) -> None:
+async def ingest_project(
+    project: Project, 
+    ip: str | None = None, 
+    params: dict[str, JsonValue] | None = None
+) -> None:
     """Dump information into database tables."""
     data = await serialize(project.__dict__)
     # check version lengths
@@ -173,7 +178,7 @@ async def ingest_project(project: Project, ip: str | None = None) -> None:
             error_type=data['process']['error_type'],
             error_desc=data['process']['error_desc'],
             is_ci=data['context']['is_ci'],
-            params=data.get('params'),
+            params=params,
             session=session,
         )
 

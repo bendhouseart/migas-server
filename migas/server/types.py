@@ -4,7 +4,6 @@ import typing
 from datetime import datetime
 from enum import Enum
 
-from strawberry.scalars import JSON
 import strawberry
 from packaging.version import Version as _Version
 from packaging.version import _BaseVersion
@@ -110,7 +109,6 @@ class Project:
     # optional
     context: Context
     process: Process
-    params: JSON | None = None
 
 
 @strawberry.input

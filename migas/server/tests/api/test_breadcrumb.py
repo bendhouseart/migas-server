@@ -42,7 +42,9 @@ class TestBreadcrumb:
                 'project_version': '1.0.0',
                 'language': 'python',
                 'language_version': '3.12',
-                'params': {'iam': 'anewparam'}
+                'proc': {
+                    'params': {'iam': 'anewparam'}
+                }
             },
         )
         assert res.status_code == 202
@@ -59,14 +61,16 @@ class TestBreadcrumb:
                 'project_version': '1.0.0',
                 'language': 'python',
                 'language_version': '3.12',
-                'params': {'iam': 'anewparam'},
                 'ctx': {
                     'user_id': user_id,
                     'session_id': session_id,
                     'platform': 'Linux-x86_64',
                     'container': 'docker',
                 },
-                'proc': {'status': 'C'},
+                'proc': {
+                    'status': 'C',
+                    'params': {'iam': 'anewparam'}
+                },
             },
         )
         assert res.status_code == 200
@@ -140,7 +144,9 @@ class TestBreadcrumb:
                 'project_version': '1.2.3',
                 'language': 'python',
                 'language_version': '3.12',
-                'params': expected_params,
+                'proc': {
+                    'params': expected_params,
+                },
                 'ctx': {
                     'session_id': session_id
                 }
