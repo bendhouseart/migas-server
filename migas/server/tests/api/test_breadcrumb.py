@@ -1,8 +1,11 @@
 """POST /api/breadcrumb — telemetry ingestion endpoint."""
 
+import asyncio
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from fastapi import BackgroundTasks, Response
 from fastapi.testclient import TestClient
 
 from migas.server.api.models import BreadcrumbRequest
@@ -31,6 +34,42 @@ def test_versions(field: str, value: str, valid: bool):
     assert getattr(model, field) == (value if valid else 'unknown')
 
 
+@pytest.mark.parametrize('wait', [True, False])
+def test_params_forwarded_to_ingestion(wait, monkeypatch, mock_request):
+    """Forward REST-only params in both synchronous and background ingestion."""
+    from migas.server.api import routes
+
+    params = {'iamanumparam': 8, 'iamadictparam': {'iamaboolparam': True}}
+    body = BreadcrumbRequest(
+        project='owner/repo', project_version='1.0.0', proc={'params': params}
+    )
+    background_tasks = BackgroundTasks()
+    ingest_project = AsyncMock()
+    monkeypatch.setattr(routes, 'project_exists', AsyncMock(return_value=True))
+    monkeypatch.setattr(routes, 'ingest_project', ingest_project)
+
+    result = asyncio.run(
+        routes.add_breadcrumb(
+            body=body,
+            request=mock_request('127.0.0.1'),
+            background_tasks=background_tasks,
+            response=Response(),
+            wait=wait,
+        )
+    )
+
+    assert result.success is True
+    if wait:
+        ingest_project.assert_awaited_once()
+        assert ingest_project.await_args.kwargs == {'params': params}
+    else:
+        ingest_project.assert_not_awaited()
+        assert len(background_tasks.tasks) == 1
+        task = background_tasks.tasks[0]
+        assert task.func is ingest_project
+        assert task.kwargs == {'params': params}
+
+
 class TestBreadcrumb:
     url = '/api/breadcrumb'
 
@@ -42,9 +81,7 @@ class TestBreadcrumb:
                 'project_version': '1.0.0',
                 'language': 'python',
                 'language_version': '3.12',
-                'proc': {
-                    'params': {'iam': 'anewparam'}
-                }
+                'proc': {'params': {'iam': 'anewparam'}},
             },
         )
         assert res.status_code == 202
@@ -67,10 +104,7 @@ class TestBreadcrumb:
                     'platform': 'Linux-x86_64',
                     'container': 'docker',
                 },
-                'proc': {
-                    'status': 'C',
-                    'params': {'iam': 'anewparam'}
-                },
+                'proc': {'status': 'C', 'params': {'iam': 'anewparam'}},
             },
         )
         assert res.status_code == 200
@@ -144,12 +178,8 @@ class TestBreadcrumb:
                 'project_version': '1.2.3',
                 'language': 'python',
                 'language_version': '3.12',
-                'proc': {
-                    'params': expected_params,
-                },
-                'ctx': {
-                    'session_id': session_id
-                }
+                'proc': {'params': expected_params},
+                'ctx': {'session_id': session_id},
             },
         )
 
