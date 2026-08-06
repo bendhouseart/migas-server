@@ -123,19 +123,42 @@ class TestBreadcrumb:
 
         monkeypatch.setattr(routes, 'ingest_project', boom)
 
-        res = client.post(
-            self.url + '?wait=true',
-            json={
-                'project': TEST_PROJECT,
-                'project_version': '1.0.0',
-                'language': 'python',
-                'language_version': '3.12',
-            },
-        )
+        payload = {
+            'project': TEST_PROJECT,
+            'project_version': '1.0.0',
+            'language': 'python',
+            'language_version': '3.12',
+        }
+        res = client.post(self.url + '?wait=true', json=payload)
+
         assert res.status_code == 500
         data = res.json()
         assert data['success'] is False
         assert data['message'] == 'Error during ingestion.'
+
+    def test_ingest_failure_direct(self, monkeypatch, mock_request):
+        from migas.server.api import routes
+
+        monkeypatch.setattr(routes, 'project_exists', AsyncMock(return_value=True))
+        monkeypatch.setattr(
+            routes, 'ingest_project', AsyncMock(side_effect=RuntimeError('DB Error'))
+        )
+
+        response = Response()
+
+        result = asyncio.run(
+            routes.add_breadcrumb(
+                body=BreadcrumbRequest(project='owner/repo', project_version='0.0.0'),
+                request=mock_request('127.0.0.1'),
+                background_tasks=BackgroundTasks(),
+                response=response,
+                wait=True,
+            )
+        )
+
+        assert response.status_code == 500
+        assert result.success is False
+        assert result.message == 'Error during ingestion.'
 
     def test_invalid_project_format(self, client: TestClient):
         res = client.post(

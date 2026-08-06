@@ -83,6 +83,37 @@ async def test_insert_query_geoloc_fault_tolerance(caplog):
             assert 'Geolocation failed for IP 1.2.3.4: MMDB corrupted' in caplog.text
 
 
+@pytest.mark.anyio
+async def test_insert_query_geoloc_returns_idx(client):
+    """Assert that a successful insert query returns the DB id for that insert"""
+    location = {
+        'asn': 12345,
+        'aso': 'Coverage ASO',
+        'continent_code': 'NA',
+        'country_code': 'NA',
+        'state_or_province': 'CodeCov',
+        'city': 'Normal',
+        'lat': 1.0,
+        'lon': 1.0,
+    }
+
+    with patch('migas.server.fetchers.geoloc', new_callable=AsyncMock, return_value=location):
+        first_idx = await insert_query_geoloc('127.0.0.1')
+        # test that we don't duplicate locs, desired behavior is to accept DB values as
+        # truth IP can vary
+        duplicate_first = await insert_query_geoloc('127.0.0.2')
+        # try a different location to see if index increases/changes
+        location['lat'] = 2.0
+        location['lon'] = 2.0
+        second_idx = await insert_query_geoloc('127.0.0.1')
+
+    assert type(first_idx) is int
+    assert first_idx > 0
+    assert type(second_idx) is int
+    assert second_idx != first_idx
+    assert duplicate_first == first_idx
+
+
 # ── env gating (formerly test_opt_in_behavior.py) ──────────────────────────
 
 
