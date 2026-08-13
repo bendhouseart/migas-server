@@ -10,6 +10,8 @@ from packaging.version import _BaseVersion
 from packaging.version import parse as parse_version
 
 from .utils import dt_to_str, str_to_dt
+from pydantic import JsonValue
+
 
 # Strawberry has a Date object, but migas's time format
 # slightly differs from datetime.datetime.isoformat()
@@ -86,6 +88,7 @@ class Process:
     status_desc: str | None = None
     error_type: str | None = None
     error_desc: str | None = None
+    params: dict[str, JsonValue] = None
     # args: Arguments = "{}"
 
 

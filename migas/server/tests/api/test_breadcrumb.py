@@ -61,13 +61,15 @@ def test_params_forwarded_to_ingestion(wait, monkeypatch, mock_request):
     assert result.success is True
     if wait:
         ingest_project.assert_awaited_once()
-        assert ingest_project.await_args.kwargs == {'params': params}
+        assert ingest_project.await_args.args[0].process.params == params
+
     else:
         ingest_project.assert_not_awaited()
         assert len(background_tasks.tasks) == 1
         task = background_tasks.tasks[0]
         assert task.func is ingest_project
-        assert task.kwargs == {'params': params}
+        project = task.args[0]
+        assert project.process.params == params
 
 
 class TestBreadcrumb:

@@ -101,5 +101,3 @@ class UsageData(BaseModel):
     version: str
     status: str
     count: int
-
-

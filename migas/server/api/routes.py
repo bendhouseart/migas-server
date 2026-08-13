@@ -241,6 +241,7 @@ async def add_breadcrumb(
         status_desc=body.proc.status_desc,
         error_type=body.proc.error_type,
         error_desc=body.proc.error_desc,
+        params=body.proc.params,
     )
     project = Project(
         project=body.project,
@@ -256,14 +257,14 @@ async def add_breadcrumb(
 
     if wait:
         try:
-            await ingest_project(project, ip, params=body.proc.params)
+            await ingest_project(project, ip)
             response.status_code = 200
         except Exception as e:
             logger.error(f'Error ingesting project {project.project}: {e}')
             response.status_code = 500
             return BreadcrumbResponse(success=False, message='Error during ingestion.')
     else:
-        background_tasks.add_task(ingest_project, project, ip, params=body.proc.params)
+        background_tasks.add_task(ingest_project, project, ip)
 
     return BreadcrumbResponse(success=True)
 
