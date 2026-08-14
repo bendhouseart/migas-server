@@ -1,4 +1,4 @@
-.PHONY: docker-build compose-up compose-down freeze release-gcp
+.PHONY: docker-build compose-up compose-down freeze release-gcp server-test
 
 BUILDTYPE=latest
 DEPLOYSERVER=uvicorn

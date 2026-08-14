@@ -1,8 +1,11 @@
 """POST /api/breadcrumb — telemetry ingestion endpoint."""
 
+import asyncio
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from fastapi import BackgroundTasks, Response
 from fastapi.testclient import TestClient
 
 from migas.server.api.models import BreadcrumbRequest
@@ -31,6 +34,44 @@ def test_versions(field: str, value: str, valid: bool):
     assert getattr(model, field) == (value if valid else 'unknown')
 
 
+@pytest.mark.parametrize('wait', [True, False])
+def test_params_forwarded_to_ingestion(wait, monkeypatch, mock_request):
+    """Forward REST-only params in both synchronous and background ingestion."""
+    from migas.server.api import routes
+
+    params = {'iamanumparam': 8, 'iamadictparam': {'iamaboolparam': True}}
+    body = BreadcrumbRequest(
+        project='owner/repo', project_version='1.0.0', proc={'params': params}
+    )
+    background_tasks = BackgroundTasks()
+    ingest_project = AsyncMock()
+    monkeypatch.setattr(routes, 'project_exists', AsyncMock(return_value=True))
+    monkeypatch.setattr(routes, 'ingest_project', ingest_project)
+
+    result = asyncio.run(
+        routes.add_breadcrumb(
+            body=body,
+            request=mock_request('127.0.0.1'),
+            background_tasks=background_tasks,
+            response=Response(),
+            wait=wait,
+        )
+    )
+
+    assert result.success is True
+    if wait:
+        ingest_project.assert_awaited_once()
+        assert ingest_project.await_args.args[0].process.params == params
+
+    else:
+        ingest_project.assert_not_awaited()
+        assert len(background_tasks.tasks) == 1
+        task = background_tasks.tasks[0]
+        assert task.func is ingest_project
+        project = task.args[0]
+        assert project.process.params == params
+
+
 class TestBreadcrumb:
     url = '/api/breadcrumb'
 
@@ -42,6 +83,7 @@ class TestBreadcrumb:
                 'project_version': '1.0.0',
                 'language': 'python',
                 'language_version': '3.12',
+                'proc': {'params': {'iam': 'anewparam'}},
             },
         )
         assert res.status_code == 202
@@ -64,7 +106,7 @@ class TestBreadcrumb:
                     'platform': 'Linux-x86_64',
                     'container': 'docker',
                 },
-                'proc': {'status': 'C'},
+                'proc': {'status': 'C', 'params': {'iam': 'anewparam'}},
             },
         )
         assert res.status_code == 200
@@ -83,19 +125,42 @@ class TestBreadcrumb:
 
         monkeypatch.setattr(routes, 'ingest_project', boom)
 
-        res = client.post(
-            self.url + '?wait=true',
-            json={
-                'project': TEST_PROJECT,
-                'project_version': '1.0.0',
-                'language': 'python',
-                'language_version': '3.12',
-            },
-        )
+        payload = {
+            'project': TEST_PROJECT,
+            'project_version': '1.0.0',
+            'language': 'python',
+            'language_version': '3.12',
+        }
+        res = client.post(self.url + '?wait=true', json=payload)
+
         assert res.status_code == 500
         data = res.json()
         assert data['success'] is False
         assert data['message'] == 'Error during ingestion.'
+
+    def test_ingest_failure_direct(self, monkeypatch, mock_request):
+        from migas.server.api import routes
+
+        monkeypatch.setattr(routes, 'project_exists', AsyncMock(return_value=True))
+        monkeypatch.setattr(
+            routes, 'ingest_project', AsyncMock(side_effect=RuntimeError('DB Error'))
+        )
+
+        response = Response()
+
+        result = asyncio.run(
+            routes.add_breadcrumb(
+                body=BreadcrumbRequest(project='owner/repo', project_version='0.0.0'),
+                request=mock_request('127.0.0.1'),
+                background_tasks=BackgroundTasks(),
+                response=response,
+                wait=True,
+            )
+        )
+
+        assert response.status_code == 500
+        assert result.success is False
+        assert result.message == 'Error during ingestion.'
 
     def test_invalid_project_format(self, client: TestClient):
         res = client.post(
@@ -122,3 +187,34 @@ class TestBreadcrumb:
         )
         assert res.status_code == 400
         assert 'not registered' in res.json()['detail']
+
+    @pytest.mark.anyio
+    async def test_retrieve_params(self, client: TestClient):
+        from sqlalchemy import select
+        from migas.server.connections import gen_session
+        from migas.server.models import Crumb
+
+        session_id = str(uuid4())
+        expected_params = {'iam': 'atestparam'}
+        res = client.post(
+            self.url + '?wait=true',
+            json={
+                'project': TEST_PROJECT,
+                'project_version': '1.2.3',
+                'language': 'python',
+                'language_version': '3.12',
+                'proc': {'params': expected_params},
+                'ctx': {'session_id': session_id},
+            },
+        )
+
+        assert res.status_code == 200
+        assert res.json()['success'] is True
+
+        async with gen_session() as session:
+            result = await session.execute(
+                select(Crumb.params).where(Crumb.session_id == session_id)
+            )
+            stored_params = result.scalar_one()
+
+        assert stored_params == expected_params

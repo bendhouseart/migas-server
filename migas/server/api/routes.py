@@ -241,6 +241,7 @@ async def add_breadcrumb(
         status_desc=body.proc.status_desc,
         error_type=body.proc.error_type,
         error_desc=body.proc.error_desc,
+        params=body.proc.params,
     )
     project = Project(
         project=body.project,
