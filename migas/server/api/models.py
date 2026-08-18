@@ -3,7 +3,7 @@
 import re
 from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, JsonValue
 from ..types import Status, User, Container
 
 # dash last so it is a literal, not a range
@@ -28,6 +28,7 @@ class ProcessPayload(BaseModel):
     status_desc: str | None = None
     error_type: str | None = None
     error_desc: str | None = None
+    params: dict[str, JsonValue] | None = None
 
 
 class BreadcrumbRequest(BaseModel):
@@ -37,7 +38,6 @@ class BreadcrumbRequest(BaseModel):
     language_version: str = '0.0.0'
     ctx: ContextPayload = ContextPayload()
     proc: ProcessPayload = ProcessPayload()
-
     _check_versions = field_validator('project_version', 'language_version')(_validate_version)
 
 

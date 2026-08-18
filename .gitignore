@@ -21,3 +21,6 @@ sandbox/
 gha-creds-*.json
 
 _version.py
+
+# Mac things
+.DS_Store
