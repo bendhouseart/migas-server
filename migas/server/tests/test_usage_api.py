@@ -356,7 +356,11 @@ async def test_usage_export_tsv_returns_all_joinable_offline_telemetry(client: T
         f'filename="migas-{project.replace("/", "-")}-all.tsv"'
     )
     reader = csv.DictReader(io.StringIO(res.text), delimiter='\t')
-    assert reader.fieldnames == TELEMETRY_EXPORT_COLUMNS + ['flags', 'iam', 'input.modality']
+    assert reader.fieldnames == TELEMETRY_EXPORT_COLUMNS + [
+        'params.flags',
+        'params.iam',
+        'params.input.modality',
+    ]
     rows = list(reader)
     assert len(rows) == 1
     row = rows[0]
@@ -378,9 +382,9 @@ async def test_usage_export_tsv_returns_all_joinable_offline_telemetry(client: T
     assert row['lat'] == '40.7128'
     assert row['lon'] == '-74.006'
     assert json.loads(row['params']) == params
-    assert json.loads(row['flags']) == ['offline', 'batch']
-    assert row['iam'] == 'newparam'
-    assert row['input.modality'] == 'T1w'
+    assert json.loads(row['params.flags']) == ['offline', 'batch']
+    assert row['params.iam'] == 'newparam'
+    assert row['params.input.modality'] == 'T1w'
 
 
 @pytest.mark.anyio

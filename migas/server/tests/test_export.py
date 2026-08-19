@@ -34,11 +34,11 @@ def test_export_column_names_are_unique():
     assert len(TELEMETRY_EXPORT_COLUMNS) == len(set(TELEMETRY_EXPORT_COLUMNS))
 
 
-def test_expanded_param_columns_preserve_keys_and_avoid_collisions():
+def test_expanded_param_columns_namespace_keys_and_avoid_collisions():
     paths = [('iam',), ('input', 'modality'), ('project',), ('params.project',)]
     assert _expanded_param_columns(paths) == [
-        ('iam', ('iam',)),
-        ('input.modality', ('input', 'modality')),
+        ('params.iam', ('iam',)),
+        ('params.input.modality', ('input', 'modality')),
         ('params.params.project', ('params.project',)),
         ('params.project', ('project',)),
     ]

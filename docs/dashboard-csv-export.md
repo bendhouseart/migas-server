@@ -85,13 +85,15 @@ The `params` JSONB value is always retained as compact JSON in the `params`
 cell. Its leaf values are also expanded into dynamic TSV columns for offline
 analysis:
 
-- A top-level scalar such as `iam` becomes the `iam` column.
-- Nested objects use dotted paths, such as `input.modality`.
+- Every derived column is namespaced with `params.` so its source is explicit.
+- A top-level scalar such as `iam` becomes the `params.iam` column.
+- Nested objects use dotted paths after the namespace, such as
+  `params.input.modality`.
 - Arrays remain compact JSON in one cell rather than becoming multiple rows or
   indexed columns.
 - Empty and null values remain represented in the original `params` JSONB.
-- A parameter path that conflicts with a fixed column is prefixed with
-  `params.`, so a parameter named `project` becomes `params.project`.
+- A parameter named `project` becomes `params.project`; it cannot be confused
+  with the fixed crumb `project` column.
 
 For example, a database value such as:
 
@@ -99,9 +101,9 @@ For example, a database value such as:
 {"iam":"newparam","input":{"modality":"T1w"},"flags":["offline","batch"]}
 ```
 
-produces `iam`, `input.modality`, and `flags` columns while preserving the
-complete object in `params`. It remains parseable with a TSV reader followed
-by a JSON parser where appropriate:
+produces `params.iam`, `params.input.modality`, and `params.flags` columns while
+preserving the complete object in `params`. It remains parseable with a TSV
+reader followed by a JSON parser where appropriate:
 
 ```python
 import csv
@@ -110,8 +112,8 @@ import json
 with open("migas-project-all.tsv", newline="") as stream:
     for row in csv.DictReader(stream, delimiter="\t"):
         params = json.loads(row["params"]) if row["params"] else None
-        flags = json.loads(row["flags"]) if row["flags"] else None
-        modality = row["input.modality"]
+        flags = json.loads(row["params.flags"]) if row["params.flags"] else None
+        modality = row["params.input.modality"]
 ```
 
 Datetimes are serialized as ISO-8601 strings, enum values use their database

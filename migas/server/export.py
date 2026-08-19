@@ -86,18 +86,12 @@ def _flatten_param_paths(value: Any, prefix: ParamPath = ()) -> set[ParamPath]:
 
 
 def _expanded_param_columns(paths: list[ParamPath]) -> list[tuple[str, ParamPath]]:
-    """Map JSON leaf paths to unique TSV headers while keeping names readable."""
+    """Map JSON leaf paths to unique, params-prefixed TSV headers."""
     used = set(TELEMETRY_EXPORT_COLUMNS)
     headers_by_path: dict[ParamPath, str] = {}
 
-    # Reserve aliases for paths that collide with the fixed telemetry schema
-    # before processing ordinary keys. This guarantees, for example, that a
-    # parameter named ``project`` is always exported as ``params.project``.
-    unique_paths = set(paths)
-    ordered_paths = sorted(unique_paths, key=lambda path: ('.'.join(path) not in used, path))
-    for path in ordered_paths:
-        path_name = '.'.join(path)
-        header = f'params.{path_name}' if path_name in used else path_name
+    for path in sorted(set(paths)):
+        header = f'params.{".".join(path)}'
         while header in used:
             header = f'params.{header}'
         used.add(header)
