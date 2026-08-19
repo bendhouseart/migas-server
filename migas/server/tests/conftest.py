@@ -155,7 +155,7 @@ class DBSeeder:
 
     async def user(
         self,
-        user_id: str,
+        user_id: str | None,
         *,
         user_type: str = 'hash',
         platform: str = 'Linux-x86_64',
@@ -187,13 +187,14 @@ class DBSeeder:
         error_type: str | None = None,
         error_desc: str | None = None,
         is_ci: bool = False,
+        params: dict | None = None,
         ensure_user: bool = True,
     ) -> None:
         from ..database import insert_crumb
 
         if timestamp is None:
             timestamp = datetime.now(timezone.utc)
-        if ensure_user:
+        if ensure_user and user_id is not None:
             await self.user(user_id=user_id)
         await insert_crumb(
             project,
@@ -208,6 +209,7 @@ class DBSeeder:
             error_type=error_type,
             error_desc=error_desc,
             is_ci=is_ci,
+            params=params,
         )
 
     async def token(self, project: str) -> dict[str, str]:

@@ -160,133 +160,90 @@ function _filenameFromResponse(response, fallback) {
 	return match?.groups?.filename || fallback;
 }
 
-async function _exportVisibleRangeCsv() {
+async function _downloadUsageTsv({
+	start = null,
+	end = null,
+	version = null,
+	button,
+	fallbackFilename,
+}) {
+	const originalText = button.textContent;
+	button.disabled = true;
+	button.textContent = "Exporting...";
+
+	try {
+		const project = projectSelect.value;
+		const qs = new URLSearchParams();
+		if (start) qs.set("start", start.toISOString());
+		if (end) qs.set("end", end.toISOString());
+		if (version) qs.set("version", version);
+
+		const query = qs.toString();
+		const res = await fetch(
+			`/api/usage-export/${_encodeProjectPath(project)}${query ? `?${query}` : ""}`,
+			{
+				headers: {
+					Authorization: `Bearer ${token}`,
+				},
+			},
+		);
+
+		if (!res.ok) {
+			let detail = "Failed to export usage data";
+			try {
+				const error = await res.json();
+				detail = error.detail || detail;
+			} catch (_err) {
+				detail = (await res.text()) || detail;
+			}
+			throw new Error(detail);
+		}
+
+		const blob = await res.blob();
+		const url = URL.createObjectURL(blob);
+		try {
+			const link = document.createElement("a");
+			link.href = url;
+			link.download = _filenameFromResponse(res, fallbackFilename);
+			document.body.appendChild(link);
+			link.click();
+			link.remove();
+		} finally {
+			URL.revokeObjectURL(url);
+		}
+	} catch (err) {
+		console.error("Usage export failed:", err);
+		alert(err.message || "Failed to export usage data");
+	} finally {
+		button.disabled = false;
+		button.textContent = originalText;
+	}
+}
+
+async function _exportVisibleRangeTsv(button) {
 	const bounds = _getVisibleExportBounds();
-	if (!bounds) return;
-
-	const button = document.getElementById("export-csv-btn");
-	button.disabled = true;
-	button.textContent = "Exporting...";
-
-	try {
-		const project = projectSelect.value;
-		const qs = new URLSearchParams({
-			start: bounds.start.toISOString(),
-			end: bounds.end.toISOString(),
-		});
-		if (selectedVersion) qs.set("version", selectedVersion);
-
-		const res = await fetch(
-			`/api/usage-export/${_encodeProjectPath(project)}?${qs.toString()}`,
-			{
-				headers: {
-					Authorization: `Bearer ${token}`,
-				},
-			},
-		);
-
-		if (!res.ok) {
-			let detail = "Failed to export usage data";
-			try {
-				const error = await res.json();
-				detail = error.detail || detail;
-			} catch (_err) {
-				detail = await res.text();
-			}
-			throw new Error(detail);
-		}
-
-		const blob = await res.blob();
-		const url = URL.createObjectURL(blob);
-		const link = document.createElement("a");
-		link.href = url;
-		link.download = _filenameFromResponse(res, "migas-usage-export.csv");
-		document.body.append(link);
-		link.click();
-		link.remove();
-		URL.revokeObjectURL(url);
-	} catch (err) {
-		console.error("Usage export failed:", err);
-		alert(err.message || "Failed to export usage data");
-	} finally {
-		button.disabled = false;
-		button.textContent = "Export CSV";
+	if (!bounds) {
+		alert("No visible data is available to export");
+		return;
 	}
+
+	await _downloadUsageTsv({
+		...bounds,
+		version: selectedVersion,
+		button,
+		fallbackFilename: "migas-usage-export.tsv",
+	});
 }
 
-async function _exportAllDataCsv() {
-	const button = document.getElementById("export-csv-btn");
-	button.disabled = true;
-	button.textContent = "Exporting...";
-
-	try {
-		const project = projectSelect.value;
-
-		// Get the full date range from the data cache
-		const rows = dataCache[project]?.day || [];
-		if (!rows.length) {
-			throw new Error("No data available to export");
-		}
-
-		// Calculate full date range
-		let earliestMs = Infinity;
-		let latestMs = 0;
-		for (const r of rows) {
-			const t = new Date(`${r.date}T00:00:00Z`).getTime();
-			if (t < earliestMs) earliestMs = t;
-			if (t > latestMs) latestMs = t;
-		}
-
-		const start = new Date(earliestMs);
-		start.setUTCHours(0, 0, 0, 0);
-		const end = new Date(latestMs);
-		end.setUTCHours(23, 59, 59, 999);
-
-		const qs = new URLSearchParams({
-			start: start.toISOString(),
-			end: end.toISOString(),
-		});
-		if (selectedVersion) qs.set("version", selectedVersion);
-
-		const res = await fetch(
-			`/api/usage-export/${_encodeProjectPath(project)}?${qs.toString()}`,
-			{
-				headers: {
-					Authorization: `Bearer ${token}`,
-				},
-			},
-		);
-
-		if (!res.ok) {
-			let detail = "Failed to export usage data";
-			try {
-				const error = await res.json();
-				detail = error.detail || detail;
-			} catch (_err) {
-				detail = await res.text();
-			}
-			throw new Error(detail);
-		}
-
-		const blob = await res.blob();
-		const url = URL.createObjectURL(blob);
-		const link = document.createElement("a");
-		link.href = url;
-		link.download = _filenameFromResponse(res, "migas-usage-export-full.csv");
-		document.body.append(link);
-		link.click();
-		link.remove();
-		URL.revokeObjectURL(url);
-	} catch (err) {
-		console.error("Usage export failed:", err);
-		alert(err.message || "Failed to export usage data");
-	} finally {
-		button.disabled = false;
-		button.textContent = "Export CSV";
-	}
+async function _exportAllDataTsv(button) {
+	await _downloadUsageTsv({
+		version: selectedVersion,
+		button,
+		fallbackFilename: "migas-usage-export-all.tsv",
+	});
 }
 
-async function _exportCustomRangeCsv() {
+async function _exportCustomRangeTsv(button) {
 	const startInput = document.getElementById("custom-start");
 	const endInput = document.getElementById("custom-end");
 
@@ -295,58 +252,22 @@ async function _exportCustomRangeCsv() {
 		return;
 	}
 
-	const button = document.getElementById("export-csv-btn");
-	button.disabled = true;
-	button.textContent = "Exporting...";
-
-	try {
-		const project = projectSelect.value;
-
-		const start = new Date(`${startInput.value}T00:00:00Z`);
-		const end = endInput.value ? new Date(`${endInput.value}T23:59:59Z`) : new Date();
-
-		const qs = new URLSearchParams({
-			start: start.toISOString(),
-			end: end.toISOString(),
-		});
-		if (selectedVersion) qs.set("version", selectedVersion);
-
-		const res = await fetch(
-			`/api/usage-export/${_encodeProjectPath(project)}?${qs.toString()}`,
-			{
-				headers: {
-					Authorization: `Bearer ${token}`,
-				},
-			},
-		);
-
-		if (!res.ok) {
-			let detail = "Failed to export usage data";
-			try {
-				const error = await res.json();
-				detail = error.detail || detail;
-			} catch (_err) {
-				detail = await res.text();
-			}
-			throw new Error(detail);
-		}
-
-		const blob = await res.blob();
-		const url = URL.createObjectURL(blob);
-		const link = document.createElement("a");
-		link.href = url;
-		link.download = _filenameFromResponse(res, "migas-usage-export-custom.csv");
-		document.body.append(link);
-		link.click();
-		link.remove();
-		URL.revokeObjectURL(url);
-	} catch (err) {
-		console.error("Usage export failed:", err);
-		alert(err.message || "Failed to export usage data");
-	} finally {
-		button.disabled = false;
-		button.textContent = "Export CSV";
+	const start = new Date(`${startInput.value}T00:00:00Z`);
+	const end = endInput.value
+		? new Date(`${endInput.value}T23:59:59.999Z`)
+		: new Date();
+	if (start > end) {
+		alert("Start date must be on or before end date");
+		return;
 	}
+
+	await _downloadUsageTsv({
+		start,
+		end,
+		version: selectedVersion,
+		button,
+		fallbackFilename: "migas-usage-export-custom.tsv",
+	});
 }
 
 // ── Reshaping ──────────────────────────────────────────────────────────────

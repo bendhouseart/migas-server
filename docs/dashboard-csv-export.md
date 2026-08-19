@@ -1,415 +1,182 @@
-# Dashboard CSV Export
+# Dashboard telemetry TSV export
 
-This document describes the CSV export currently implemented on the
-`update-dashboard-with-csv-export` branch. It follows an export from the
-dashboard button, through the API and database, and back to the browser as a
-download.
-
-> [!IMPORTANT]
-> This is a description of the current working tree, not a claim that every
-> part is production-ready. The [Review findings](#review-findings) section
-> identifies behavior that should be resolved before merging.
-
-## What the export is for
-
-The charts display aggregated usage data:
+The dashboard can export project telemetry as a flat TSV for offline analysis.
+Each TSV row represents one breadcrumb and contains every telemetry field that
+can be joined to it from PostgreSQL:
 
 ```text
-date + version + status → session count
+crumbs.user_id -> users.user_id
+users.geoloc_idx -> geoloc.idx
 ```
 
-That aggregate is useful for visualization, but it is not a faithful export of
-the underlying telemetry. The new export therefore does **not** use
-ApexCharts' built-in CSV output. Instead, the dashboard asks the server for the
-raw `migas.crumbs` rows matching the selected project, time range, and optional
-version.
+Both joins are left joins. A crumb is therefore exported even when it is
+anonymous, its user record is missing, or no geolocation was recorded.
 
-The intended result is one CSV row per matching database crumb.
+The `projects` table contributes only the same project name already stored on
+the crumb, so it is not duplicated. Authentication records are deliberately
+excluded: tokens and token metadata are authorization data, not telemetry, and
+must never be included in an offline export.
 
-## End-to-end flow
+## Dashboard modes
 
-```mermaid
-sequenceDiagram
-    actor User
-    participant Dashboard as Dashboard JavaScript
-    participant API as GET /api/usage-export/{project}
-    participant Auth as Token authorization
-    participant DB as PostgreSQL
+The dashboard exposes three export actions:
 
-    User->>Dashboard: Click an export button
-    Dashboard->>Dashboard: Determine start, end, and version
-    Dashboard->>API: Fetch CSV with Bearer token
-    API->>Auth: Verify access to project
-    Auth-->>API: Authorized
-    API->>DB: Select raw crumb rows
-    DB-->>API: Matching rows
-    API->>API: Serialize rows as CSV
-    API-->>Dashboard: text/csv response
-    Dashboard->>Dashboard: Convert response to Blob
-    Dashboard-->>User: Download .csv file
-```
+- **Export TSV** exports the visible chart range.
+- **Export All** exports the selected project's complete database history.
+- **Export Custom** exports a user-supplied date range.
 
-The main pieces are:
-
-| Layer | Location | Responsibility |
-| --- | --- | --- |
-| Dashboard controls | `migas/static/dashboard.html` | Presents the export buttons |
-| Browser behavior | `migas/static/js/dashboard.js` | Chooses filters, calls the API, and starts the download |
-| API endpoint | `migas/server/api/routes.py` | Authorizes, serializes, and returns the CSV |
-| Database query | `migas/server/database.py` | Selects raw crumb rows |
-| Database model | `migas/server/models.py` | Declares the `params` JSONB column |
-| Migration | `alembic/versions/7a13ef1e90c4_add_crumb_params.py` | Adds `params` to existing databases |
-| API tests | `migas/server/tests/test_usage_api.py` | Checks filtering and project authorization |
-
-## Dashboard export modes
-
-The current working tree presents three buttons.
-
-### Export CSV
-
-`Export CSV` calls `_exportVisibleRangeCsv()`.
-
-It exports:
-
-- The currently selected project.
-- The chart's current visible start and end dates.
-- Only the selected version when a version filter is active.
-- All versions when the dashboard is set to **All Versions**.
-
-The browser normalizes the bounds to complete UTC days:
-
-```text
-start → 00:00:00.000 UTC
-end   → 23:59:59.999 UTC
-```
-
-If the chart does not currently have explicit viewport bounds, the function
-uses the earliest and latest dates present in the project's browser-side day
+An active version filter applies to all three modes. Export All sends no date
+bounds; it no longer derives an incomplete range from the browser's dashboard
 cache.
 
-### Export All
+All modes use one browser download helper. The clicked button owns its busy
+state, error handling, response filename, and cleanup.
 
-`Export All` calls `_exportAllDataCsv()`.
+## API
 
-Despite its current label, it does **not** ask the database for the project's
-true minimum and maximum timestamps. It derives its range from
-`dataCache[project].day`.
-
-This means “all” currently means:
-
-> All dates that have already been loaded into this dashboard session.
-
-On the initial dashboard load, that may only be the default four-week window.
-The range grows if the user previously requested more history. An active
-version filter is also applied to this export.
-
-### Export Custom
-
-`Export Custom` calls `_exportCustomRangeCsv()`.
-
-- A start date is required.
-- The start becomes midnight UTC.
-- A supplied end date becomes `23:59:59 UTC`.
-- If no end date is supplied, the current time is used.
-- An active version filter is applied.
-
-This function reads the same `custom-start` and `custom-end` inputs used by the
-dashboard's custom time-range control.
-
-## Browser request
-
-All three modes ultimately make the same authenticated request:
+All dashboard modes call the same authenticated endpoint:
 
 ```http
-GET /api/usage-export/{project}?start={ISO-8601}&end={ISO-8601}&version={optional}
+GET /api/usage-export/{project}
 Authorization: Bearer {dashboard-token}
 ```
 
-For example:
+The query parameters are optional:
 
-```http
-GET /api/usage-export/nipreps/fmriprep
-    ?start=2026-07-01T00:00:00.000Z
-    &end=2026-07-07T23:59:59.999Z
-    &version=25.1.0
+| Parameter | Type | Meaning |
+| --- | --- | --- |
+| `start` | ISO-8601 datetime | Include crumbs at or after this instant |
+| `end` | ISO-8601 datetime | Include crumbs at or before this instant |
+| `version` | string | Include only this project version |
+
+Omitting both dates exports all history. Supplying only one date creates an
+open-ended range. If both are supplied and `start > end`, the endpoint returns
+HTTP 400.
+
+The endpoint uses the existing project-scoped authorization dependency.
+Project tokens can only export their project; master authorization retains its
+existing cross-project behavior. Unknown projects return HTTP 404.
+
+## TSV schema
+
+Crumb column names are retained for compatibility. Joined identifiers are
+named explicitly where their source would otherwise be ambiguous.
+
+| Source | TSV columns |
+| --- | --- |
+| `crumbs` | `idx`, `project`, `version`, `language`, `language_version`, `timestamp`, `session_id`, `user_id`, `status`, `status_desc`, `error_type`, `error_desc`, `is_ci`, `params` |
+| `users` | `user_idx`, `joined_user_id`, `user_type`, `platform`, `container`, `geoloc_idx` |
+| `geoloc` | `joined_geoloc_idx`, `asn`, `asn_org`, `continent_code`, `country_code`, `state_province_name`, `city_name`, `lat`, `lon` |
+
+`user_id` is the foreign-key value stored on the crumb.
+`joined_user_id` is the value found in the joined user row. Likewise,
+`geoloc_idx` comes from the user and `joined_geoloc_idx` confirms the
+geolocation row that was found. Keeping both values makes incomplete or
+inconsistent historical data visible during offline analysis.
+
+The fixed column order is explicit and stable. Adding a telemetry field to one
+of these tables requires adding it to `TELEMETRY_EXPORT_COLUMNS` and the
+matching select expression in `migas/server/export.py`. Flattened parameter
+columns follow the fixed columns in sorted path order.
+
+## Structured telemetry
+
+The `params` JSONB value is always retained as compact JSON in the `params`
+cell. Its leaf values are also expanded into dynamic TSV columns for offline
+analysis:
+
+- A top-level scalar such as `iam` becomes the `iam` column.
+- Nested objects use dotted paths, such as `input.modality`.
+- Arrays remain compact JSON in one cell rather than becoming multiple rows or
+  indexed columns.
+- Empty and null values remain represented in the original `params` JSONB.
+- A parameter path that conflicts with a fixed column is prefixed with
+  `params.`, so a parameter named `project` becomes `params.project`.
+
+For example, a database value such as:
+
+```json
+{"iam":"newparam","input":{"modality":"T1w"},"flags":["offline","batch"]}
 ```
 
-Project path components are encoded individually so a project such as
-`nipreps/fmriprep` keeps its slash while unsafe characters are escaped.
-
-## API behavior
-
-The endpoint is:
+produces `iam`, `input.modality`, and `flags` columns while preserving the
+complete object in `params`. It remains parseable with a TSV reader followed
+by a JSON parser where appropriate:
 
 ```python
-@router.get('/usage-export/{project:path}')
-async def export_usage_csv(...)
+import csv
+import json
+
+with open("migas-project-all.tsv", newline="") as stream:
+    for row in csv.DictReader(stream, delimiter="\t"):
+        params = json.loads(row["params"]) if row["params"] else None
+        flags = json.loads(row["flags"]) if row["flags"] else None
+        modality = row["input.modality"]
 ```
 
-It performs these checks before querying:
+Datetimes are serialized as ISO-8601 strings, enum values use their database
+value, and SQL nulls become empty TSV cells.
 
-1. `require_access()` verifies that the Bearer token may access the requested
-   project.
-2. Naive timestamps are treated as UTC.
-3. A start later than the end returns HTTP 400.
-4. A missing project returns HTTP 404.
+## Streaming behavior
 
-The `start` and `end` query parameters are required. `version` is optional.
-
-## Database query
-
-`query_crumb_export()` selects raw `Crumb` records using:
+The server first streams only the matching `params` values to discover the
+union of flattened column paths. It does not retain the telemetry rows. It then
+uses a PostgreSQL server-side result stream and writes one TSV row at a time:
 
 ```text
-project = requested project
-timestamp >= requested start
-timestamp <= requested end
-version = requested version, when supplied
+parameter-key prepass -> PostgreSQL joined-row cursor -> TSV row -> HTTP StreamingResponse
 ```
 
-Rows are ordered by:
+This replaces the earlier path that loaded all database rows and the complete
+export into server memory. Dynamic columns require a bounded-memory first pass,
+so the matching `params` values are scanned twice. Rows are ordered by crumb
+timestamp and then crumb index, giving deterministic output.
 
-1. `timestamp` ascending
-2. `idx` ascending
-
-The existing `(project, timestamp)` index supports the primary project and
-time-range filter.
-
-## Exported columns
-
-The CSV header is currently explicit and stable:
-
-| Column | Source |
-| --- | --- |
-| `idx` | `crumbs.idx` |
-| `project` | `crumbs.project` |
-| `version` | `crumbs.version` |
-| `language` | `crumbs.language` |
-| `language_version` | `crumbs.language_version` |
-| `timestamp` | `crumbs.timestamp` |
-| `session_id` | `crumbs.session_id` |
-| `user_id` | `crumbs.user_id` |
-| `status` | `crumbs.status` |
-| `status_desc` | `crumbs.status_desc` |
-| `error_type` | `crumbs.error_type` |
-| `error_desc` | `crumbs.error_desc` |
-| `is_ci` | `crumbs.is_ci` |
-| `params` | `crumbs.params` |
-
-These are all columns currently declared on `Crumb`. The export does not join
-the related `users` or `geoloc` tables.
-
-Because the list is explicit, adding another `crumbs` column in the future
-will require updating both `query_crumb_export()` and
-`CRUMB_EXPORT_COLUMNS`.
-
-## JSON and JSONB handling
-
-JSON objects and arrays are deliberately kept intact in one cell. They are not
-flattened into dynamic columns.
-
-Before the CSV writer receives a value:
-
-- A `datetime` becomes an ISO-8601 string.
-- A `dict` or `list` becomes JSON using `json.dumps(..., sort_keys=True)`.
-- `None` becomes an empty cell.
-- Other scalar values pass through unchanged.
-
-Example database value:
-
-```json
-{
-  "labels": ["control", "patient"],
-  "output_spaces": {
-    "MNI": true,
-    "T1w": false
-  }
-}
-```
-
-Conceptual CSV output:
-
-```csv
-idx,project,params
-42,nipreps/fmriprep,"{""labels"": [""control"", ""patient""], ""output_spaces"": {""MNI"": true, ""T1w"": false}}"
-```
-
-The commas inside JSON are safe. Python's `csv.DictWriter` quotes the complete
-cell and doubles its internal quotation marks according to CSV rules. A CSV
-parser reconstructs the cell as the original JSON string, which the downloader
-can then parse.
-
-Arrays receive the same treatment:
-
-```json
-["one", "two", "three"]
-```
-
-They remain one quoted CSV cell rather than becoming indexed columns.
-
-## Response and filename
-
-The server responds with:
-
-```http
-Content-Type: text/csv; charset=utf-8
-Content-Disposition: attachment; filename="migas-{project}-{start-date}-{end-date}.csv"
-```
-
-Slashes and other unsafe filename characters in the project name are replaced
-with hyphens.
-
-The browser:
-
-1. Reads the complete response as a `Blob`.
-2. Creates a temporary object URL.
-3. Creates and clicks an `<a download>` element.
-4. Removes the element and revokes the object URL.
-
-If the server supplies a filename in `Content-Disposition`, the browser uses
-it. Otherwise, the JavaScript uses a fallback filename.
-
-## Authorization and error behavior
-
-The export uses the same project-scoped authorization dependency as the usage
+The browser currently uses `Response.blob()` because authenticated downloads
+need the Bearer token. Consequently, the server is streaming-safe but the
+browser still holds the completed file in memory before saving it. If exports
+grow beyond practical browser memory, the next step is an asynchronous export
+job with expiring object-storage downloads rather than another synchronous
 endpoint.
 
-- Missing or invalid token: HTTP 401.
-- Valid token for another project: HTTP 403.
-- Unknown project: HTTP 404.
-- Start after end: HTTP 400.
+## Response
 
-The dashboard attempts to read the API's JSON error detail. If that is not
-available, it falls back to the response text and displays an alert.
+A successful response includes:
 
-## Tests currently present
-
-The API tests verify:
-
-- Raw crumbs are returned rather than chart aggregates.
-- The requested timestamp range is honored.
-- The active version filter is honored.
-- Expected scalar fields appear in the CSV.
-- A null `params` value becomes an empty cell.
-- A project-scoped token cannot export a different project.
-
-Coverage that is not yet present includes:
-
-- A populated JSON/JSONB `params` value containing commas, quotes, tabs, or
-  newlines.
-- An array stored in `params`.
-- An export with no matching rows.
-- Start-after-end validation.
-- Unknown-project behavior.
-- Master-token export.
-- Browser tests for all three buttons.
-- Large-result memory behavior.
-
-## Review findings
-
-The following items are important to resolve or explicitly accept before this
-feature is considered complete.
-
-### 1. The implementation buffers the export multiple times
-
-The database function calls `res.all()`, so every matching row is loaded into
-server memory. The route then builds the complete CSV in `StringIO`. Finally,
-the browser calls `res.blob()`, which buffers the complete response again.
-
-```text
-PostgreSQL result → Python row list → Python CSV string → browser Blob
+```http
+Content-Type: text/tab-separated-values; charset=utf-8
+Content-Disposition: attachment; filename="migas-{project}-{range}.tsv"
+Cache-Control: no-store
+X-Content-Type-Options: nosniff
 ```
 
-This is straightforward for small exports but unsafe for large result sets.
-A production-scale version should stream rows from PostgreSQL and return a
-`StreamingResponse`. Very large exports may be better handled as background
-jobs written to object storage.
+Unsafe filename characters, including project-name slashes, are replaced with
+hyphens. An all-history export uses the suffix `-all.tsv`. Empty projects
+return a header-only TSV containing the fixed telemetry columns.
 
-### 2. “Export All” is not a database-wide export
+## Data fidelity and spreadsheet safety
 
-Its date bounds come from the browser cache, which normally contains a limited
-window. Either:
+Exports preserve raw telemetry values. Text beginning with `=`, `+`, `-`,
+or `@` is not rewritten, because escaping it would change the offline dataset.
+Consumers opening untrusted exports directly in spreadsheet applications
+should use an import mode that does not evaluate formulas. A future
+spreadsheet-safe presentation export should be a separate format from this
+lossless telemetry export.
 
-- Rename it to **Export Loaded Data**; or
-- Add a server-side mode that determines the complete project range; or
-- Remove it and keep visible/custom range exports only.
+## Test coverage
 
-### 3. The `params` column is not wired into ingestion
+The export tests cover:
 
-The ORM model and migration define `Crumb.params`, and the export includes it.
-However, the current request models, GraphQL types, `insert_crumb()`, and
-`ingest_project()` do not pass `params` into the database insert.
+- timestamp and version filtering;
+- project-scoped authorization;
+- all-history export with no date bounds;
+- all crumb, user, and geolocation fields;
+- recursively flattened JSON objects and array-valued TSV cells;
+- anonymous crumbs and missing join rows;
+- empty projects;
+- reversed date ranges;
+- deterministic, unique column names; and
+- download security headers.
 
-The breadcrumb tests submit a `params` field, but Pydantic currently ignores
-that extra input. As a result, normal ingestion will leave the exported
-`params` cell empty unless another process populates the column.
-
-### 4. The reset-zoom control was removed from the HTML
-
-The current uncommitted dashboard change replaces the `Reset View` button with
-`Export All` and `Export Custom`. Other JavaScript still calls:
-
-```javascript
-document.getElementById("reset-zoom-btn").classList...
-```
-
-With the element absent, dashboard metric updates can raise a JavaScript error.
-The reset button should be restored or all references should be made
-null-safe.
-
-### 5. All export modes manipulate the first button
-
-`_exportAllDataCsv()` and `_exportCustomRangeCsv()` both obtain:
-
-```javascript
-document.getElementById("export-csv-btn")
-```
-
-Therefore, clicking **Export All** or **Export Custom** disables and relabels
-the separate **Export CSV** button instead of the button the user clicked.
-
-The functions should receive the clicked button, select their own IDs, or use
-one shared export function with a button argument.
-
-### 6. The browser code is duplicated
-
-Each export mode independently implements authentication, error parsing, Blob
-creation, filename selection, and cleanup. A shared helper could reduce this
-to:
-
-```javascript
-_downloadUsageCsv({ start, end, version, button, fallbackFilename })
-```
-
-The three public functions would then only determine their date bounds.
-
-### 7. The column contract is narrower than “all related telemetry”
-
-The export contains every currently declared `crumbs` field, but not the
-associated user or geolocation fields. If “all fields for an entry” means the
-complete normalized telemetry record, the query would need left joins to
-`users` and `geoloc`.
-
-### 8. Spreadsheet formula handling is undefined
-
-Fields such as status and error descriptions may contain user-controlled text.
-CSV applications can interpret cells beginning with `=`, `+`, `-`, or `@` as
-formulas. Preserving raw data and making spreadsheet opening safe are
-different goals; the intended policy should be decided explicitly.
-
-## Decisions to review
-
-1. Should **Export All** mean all database history or all currently loaded
-   dashboard data?
-2. Should exports contain only `crumbs` columns, or also joined user and
-   geolocation fields?
-3. What is the largest export the synchronous endpoint should permit?
-4. Should the server stream CSV immediately, or create asynchronous export
-   jobs for large ranges?
-5. Should the original `params` JSON be the only representation, or should
-   selected keys optionally receive dedicated columns later?
-6. Should formula-like strings be preserved exactly or escaped for spreadsheet
-   safety?
-7. Should `params` be accepted by both REST and GraphQL ingestion, or only one
-   interface?
-
+The dashboard JavaScript is syntax-checked separately. Browser automation is
+not currently part of this repository's test suite.

@@ -1,9 +1,8 @@
-import csv
 import json
 import logging
-from io import StringIO
 from datetime import date, datetime, timezone, timedelta
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 
 from ..auth import get_authorized_projects
 from ..cache import RESPONSE_TTL, historical_key, usage_key
@@ -15,10 +14,10 @@ from ..database import (
     get_viz_data,
     ingest_project,
     project_exists,
-    query_crumb_export,
     query_projects,
     revoke_token,
 )
+from ..export import stream_telemetry_tsv
 from ..types import Context, Process, Project
 from ..utils import now
 from .deps import rate_limit, require_access
@@ -38,23 +37,6 @@ from .models import (
 
 router = APIRouter(prefix='/api', tags=['api'])
 logger = logging.getLogger('migas')
-
-CRUMB_EXPORT_COLUMNS = [
-    'idx',
-    'project',
-    'version',
-    'language',
-    'language_version',
-    'timestamp',
-    'session_id',
-    'user_id',
-    'status',
-    'status_desc',
-    'error_type',
-    'error_desc',
-    'is_ci',
-    'params',
-]
 
 
 @router.get('/auth/projects', response_model=AuthProjectsResponse)
@@ -164,51 +146,47 @@ async def _extend_historical(
     return data, oldest_date, last_date, dirty
 
 
-def _csv_value(value):
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, sort_keys=True)
-    if value is None:
-        return ''
-    return value
-
-
-def _safe_export_filename(project: str, start: datetime, end: datetime) -> str:
+def _safe_export_filename(
+    project: str, start: datetime | None = None, end: datetime | None = None
+) -> str:
     safe_project = ''.join(c if c.isalnum() or c in ('-', '_', '.') else '-' for c in project)
-    return f'migas-{safe_project}-{start.date()}-{end.date()}.csv'
+    if start is None and end is None:
+        range_label = 'all'
+    elif start is None:
+        range_label = f'through-{end.date()}'
+    elif end is None:
+        range_label = f'from-{start.date()}'
+    else:
+        range_label = f'{start.date()}-{end.date()}'
+    return f'migas-{safe_project}-{range_label}.tsv'
 
 
 @router.get('/usage-export/{project:path}')
-async def export_usage_csv(
+async def export_usage_tsv(
     project: str,
-    start: datetime,
-    end: datetime,
+    start: datetime | None = None,
+    end: datetime | None = None,
     version: str | None = None,
     _auth=Depends(require_access()),
 ):
-    """Export raw crumb rows for the selected dashboard range as CSV."""
-    start = _utc(start)
-    end = _utc(end)
-    if start > end:
+    """Stream joined crumb, user, and geolocation telemetry as TSV."""
+    start = _utc(start) if start is not None else None
+    end = _utc(end) if end is not None else None
+    if start is not None and end is not None and start > end:
         raise HTTPException(status_code=400, detail='start must be before end.')
 
     if not await project_exists(project):
         raise HTTPException(status_code=404, detail=f'Project {project} not found.')
 
-    rows = await query_crumb_export(project, start, end, version=version)
-
-    output = StringIO()
-    writer = csv.DictWriter(output, fieldnames=CRUMB_EXPORT_COLUMNS, lineterminator='\n')
-    writer.writeheader()
-    for row in rows:
-        writer.writerow({column: _csv_value(row.get(column)) for column in CRUMB_EXPORT_COLUMNS})
-
     filename = _safe_export_filename(project, start, end)
-    return Response(
-        output.getvalue(),
-        media_type='text/csv; charset=utf-8',
-        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
+    return StreamingResponse(
+        stream_telemetry_tsv(project, start=start, end=end, version=version),
+        media_type='text/tab-separated-values; charset=utf-8',
+        headers={
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Cache-Control': 'no-store',
+            'X-Content-Type-Options': 'nosniff',
+        },
     )
 
 

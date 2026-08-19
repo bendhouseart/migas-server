@@ -2,6 +2,7 @@
 
 import csv
 import io
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -222,12 +223,14 @@ async def test_usage_api_response_cache(client: TestClient, db, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_usage_export_csv_returns_raw_crumbs_for_range(client: TestClient, db):
-    """CSV export returns raw DB rows, filtered by timestamp range and active version."""
+async def test_usage_export_tsv_returns_raw_crumbs_for_range(client: TestClient, db):
+    """TSV export returns joined DB rows, filtered by timestamp range and active version."""
     from datetime import datetime, timezone, timedelta
+    from uuid import uuid4
+
     from migas.server.tests.conftest import USER_A, USER_B, SESSION_1, SESSION_2, SESSION_3
 
-    project = 'test/api-export'
+    project = f'test/api-export-{uuid4()}'
     await db.register(project)
     auth = await db.token(project)
 
@@ -270,10 +273,10 @@ async def test_usage_export_csv_returns_raw_crumbs_for_range(client: TestClient,
     )
 
     assert res.status_code == 200
-    assert res.headers['content-type'].startswith('text/csv')
-    assert 'attachment; filename="migas-test-api-export-' in res.headers['content-disposition']
+    assert res.headers['content-type'].startswith('text/tab-separated-values')
+    assert f'filename="migas-{project.replace("/", "-")}-' in res.headers['content-disposition']
 
-    rows = list(csv.DictReader(io.StringIO(res.text)))
+    rows = list(csv.DictReader(io.StringIO(res.text), delimiter='\t'))
     assert len(rows) == 1
     row = rows[0]
     assert row['project'] == project
@@ -282,10 +285,168 @@ async def test_usage_export_csv_returns_raw_crumbs_for_range(client: TestClient,
     assert row['status_desc'] == 'done'
     assert row['session_id'] == SESSION_1
     assert row['params'] == ''
+    assert row['joined_user_id'] == USER_A
+    assert row['platform'] == 'Linux-x86_64'
+    assert row['joined_geoloc_idx'] == ''
 
 
 @pytest.mark.anyio
-async def test_usage_export_csv_respects_project_access(client: TestClient, db):
+async def test_usage_export_tsv_returns_all_joinable_offline_telemetry(client: TestClient, db):
+    """An unbounded export includes crumb, user, geolocation, and structured params fields."""
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from sqlalchemy import insert
+
+    from migas.server.connections import gen_session
+    from migas.server.export import TELEMETRY_EXPORT_COLUMNS
+    from migas.server.models import GeoLoc
+
+    project = f'test/api-export-joined-{uuid4()}'
+    user_id = str(uuid4())
+    session_id = str(uuid4())
+    city = f'Offline-{uuid4()}'
+    await db.register(project)
+    auth = await db.token(project)
+
+    async with gen_session() as session:
+        geoloc_idx = (
+            await session.execute(
+                insert(GeoLoc)
+                .values(
+                    asn=64512,
+                    asn_org='Offline Telemetry Network',
+                    continent_code='NA',
+                    country_code='US',
+                    state_province_name='New York',
+                    city_name=city,
+                    lat=40.7128,
+                    lon=-74.006,
+                )
+                .returning(GeoLoc.idx)
+            )
+        ).scalar_one()
+
+    await db.user(
+        user_id,
+        user_type='general',
+        platform='Linux-aarch64',
+        container='apptainer',
+        geoloc_idx=geoloc_idx,
+    )
+    params = {'iam': 'newparam', 'input': {'modality': 'T1w'}, 'flags': ['offline', 'batch']}
+    await db.crumb(
+        project,
+        status='C',
+        status_desc='offline complete',
+        session_id=session_id,
+        user_id=user_id,
+        timestamp=datetime(2026, 7, 20, 12, 30, tzinfo=timezone.utc),
+        version='2.1.0',
+        params=params,
+        ensure_user=False,
+    )
+
+    res = client.get(f'/api/usage-export/{project}', headers=auth)
+
+    assert res.status_code == 200
+    assert res.headers['cache-control'] == 'no-store'
+    assert res.headers['x-content-type-options'] == 'nosniff'
+    assert res.headers['content-disposition'].endswith(
+        f'filename="migas-{project.replace("/", "-")}-all.tsv"'
+    )
+    reader = csv.DictReader(io.StringIO(res.text), delimiter='\t')
+    assert reader.fieldnames == TELEMETRY_EXPORT_COLUMNS + ['flags', 'iam', 'input.modality']
+    rows = list(reader)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row['project'] == project
+    assert row['user_id'] == user_id
+    assert row['joined_user_id'] == user_id
+    assert row['user_idx']
+    assert row['user_type'] == 'general'
+    assert row['platform'] == 'Linux-aarch64'
+    assert row['container'] == 'apptainer'
+    assert row['geoloc_idx'] == str(geoloc_idx)
+    assert row['joined_geoloc_idx'] == str(geoloc_idx)
+    assert row['asn'] == '64512'
+    assert row['asn_org'] == 'Offline Telemetry Network'
+    assert row['continent_code'] == 'NA'
+    assert row['country_code'] == 'US'
+    assert row['state_province_name'] == 'New York'
+    assert row['city_name'] == city
+    assert row['lat'] == '40.7128'
+    assert row['lon'] == '-74.006'
+    assert json.loads(row['params']) == params
+    assert json.loads(row['flags']) == ['offline', 'batch']
+    assert row['iam'] == 'newparam'
+    assert row['input.modality'] == 'T1w'
+
+
+@pytest.mark.anyio
+async def test_usage_export_tsv_empty_project_returns_header(client: TestClient, db):
+    from uuid import uuid4
+
+    from migas.server.export import TELEMETRY_EXPORT_COLUMNS
+
+    project = f'test/api-export-empty-{uuid4()}'
+    await db.register(project)
+    auth = await db.token(project)
+
+    res = client.get(f'/api/usage-export/{project}', headers=auth)
+
+    assert res.status_code == 200
+    reader = csv.DictReader(io.StringIO(res.text), delimiter='\t')
+    assert reader.fieldnames == TELEMETRY_EXPORT_COLUMNS
+    assert list(reader) == []
+
+
+@pytest.mark.anyio
+async def test_usage_export_tsv_preserves_crumb_without_user(client: TestClient, db):
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    project = f'test/api-export-anonymous-{uuid4()}'
+    await db.register(project)
+    auth = await db.token(project)
+    await db.crumb(
+        project,
+        status='R',
+        session_id=str(uuid4()),
+        user_id=None,
+        timestamp=datetime(2026, 7, 20, 12, 30, tzinfo=timezone.utc),
+    )
+
+    res = client.get(f'/api/usage-export/{project}', headers=auth)
+
+    assert res.status_code == 200
+    rows = list(csv.DictReader(io.StringIO(res.text), delimiter='\t'))
+    assert len(rows) == 1
+    assert rows[0]['user_id'] == ''
+    assert rows[0]['joined_user_id'] == ''
+    assert rows[0]['joined_geoloc_idx'] == ''
+
+
+@pytest.mark.anyio
+async def test_usage_export_tsv_rejects_reversed_range(client: TestClient, db):
+    from uuid import uuid4
+
+    project = f'test/api-export-range-{uuid4()}'
+    await db.register(project)
+    auth = await db.token(project)
+
+    res = client.get(
+        f'/api/usage-export/{project}',
+        params={'start': '2026-07-21T00:00:00Z', 'end': '2026-07-20T00:00:00Z'},
+        headers=auth,
+    )
+
+    assert res.status_code == 400
+    assert res.json()['detail'] == 'start must be before end.'
+
+
+@pytest.mark.anyio
+async def test_usage_export_tsv_respects_project_access(client: TestClient, db):
     """Scoped tokens cannot export another project's raw crumbs."""
     from datetime import datetime, timezone, timedelta
 
@@ -298,10 +459,7 @@ async def test_usage_export_csv_respects_project_access(client: TestClient, db):
     now = datetime.now(timezone.utc)
     res = client.get(
         f'/api/usage-export/{blocked_project}',
-        params={
-            'start': (now - timedelta(days=1)).isoformat(),
-            'end': now.isoformat(),
-        },
+        params={'start': (now - timedelta(days=1)).isoformat(), 'end': now.isoformat()},
         headers=auth,
     )
 
